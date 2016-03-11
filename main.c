@@ -17,8 +17,8 @@ typedef unsigned short ushort;
 #define maxfrom_0 (1 << maxfrom_bits_0)
 #define maxfrom_mask_0 (maxfrom_0 - 1)
 
-#define minlen_1 (3)
-#define maxlen_1 (100)
+#define minlen_1 (2)
+#define maxlen_1 (0x101)
 
 byte read_byte(byte *input, ushort *readoff)
 {
@@ -79,6 +79,7 @@ ushort do_decompress_0(byte *input, byte *output, ushort out_size)
 	byte reps_bits_cnt = 0;
 	byte b = 0;
 	ushort w = 0;
+	int repeat = 0;
 	
 	cmd = 0;
 	cmdbits = 1;
@@ -105,12 +106,13 @@ ushort do_decompress_0(byte *input, byte *output, ushort out_size)
 			reps = ((w & reps_mask) >> (16 - reps_bits_cnt)) + 2;
 			from = (w & from_mask);
 
-			from = (short)(writeoff - from - 1);
+			from = writeoff - from - 1;
+			repeat = (short)from < 0;
 
 			for (i = 0; i < reps; ++i)
 			{
 				b = read_byte(output, &from);
-				b = ((short)from < 0) ? 0 : b;
+				b = (repeat ? 0 : b);
 				write_byte(output, &writeoff, b);
 			}
 		}
@@ -144,9 +146,8 @@ ushort do_decompress_0_size(byte *input, ushort out_size)
 		}
 		else
 		{
-			readoff += 2;
 			w = read_word(input, &readoff);
-			reps_mask = ((1 << reps_bits_cnt) - 1) << (16 - reps_bits_cnt);
+			reps_mask = ((1 << reps_bits_cnt) - 1) << maxfrom_bits_0;
 			reps = ((w & reps_mask) >> (16 - reps_bits_cnt)) + 2;
 
 			writeoff += reps;
@@ -158,8 +159,8 @@ ushort do_decompress_0_size(byte *input, ushort out_size)
 
 ushort do_decompress_1_byte(byte *input, byte *output, ushort in_size)
 {
-	ushort readoff = 0, writeoff = 0;
-	byte i = 0, b = 0, reps = 0;
+	ushort i = 0, readoff = 0, writeoff = 0, reps = 0;
+	byte b = 0;
 
 	while (readoff < in_size)
 	{
@@ -205,8 +206,7 @@ ushort do_decompress_1_byte_size(byte *input, ushort in_size)
 
 ushort do_decompress_1_word(byte *input, byte *output, ushort in_size)
 {
-	ushort w = 0, readoff = 0, writeoff = 0;
-	byte i = 0, reps = 0;
+	ushort w = 0, readoff = 0, writeoff = 0, reps = 0, i = 0;
 
 	while (readoff < in_size)
 	{
@@ -236,7 +236,7 @@ ushort do_decompress_1_word(byte *input, byte *output, ushort in_size)
 
 ushort do_decompress_1_word_size(byte *input, ushort in_size)
 {
-	ushort w = 0, readoff = 0;
+	ushort w = 0, readoff = 0, writeoff = 0;
 
 	while (readoff < in_size)
 	{
@@ -252,7 +252,7 @@ ushort do_decompress_1_word_size(byte *input, ushort in_size)
 		}
 	}
 
-	return readoff;
+	return writeoff;
 }
 
 ushort do_decompress_1_copy(byte *input, byte *output)
@@ -317,22 +317,28 @@ ushort ADDCALL compressed_size(byte *input)
 
 		switch (method)
 		{
-		case 0: return do_decompress_1_byte_size(&input[readoff], out_size);
-		case 1: return do_decompress_1_word_size(&input[readoff], out_size);
+		case 0: out_size = do_decompress_1_byte_size(&input[readoff], out_size); break;
+		case 1: out_size = do_decompress_1_word_size(&input[readoff], out_size); break;
 		case 2:
-		case 3: return do_decompress_1_copy_size(&input[readoff]);
+		case 3: out_size = do_decompress_1_copy_size(&input[readoff]); break;
 		}
 	}
+	else
+	{
+		out_size = do_decompress_0_size(&input[readoff], out_size);
+	}
+	readoff += out_size;
 
-	return do_decompress_0_size(&input[readoff], out_size);
+	return readoff;
 }
 
-void find_xx_matches(byte *input, ushort readoff, ushort size, ushort *reps, ushort *from, byte reps_bits_cnt)
+void find_00_matches(byte *input, ushort readoff, ushort size, ushort *reps, ushort *from, byte reps_bits_cnt)
 {
 	*reps = 1;
 	*from = 0;
 
 	while (
+		input[readoff] == 0 &&
 		readoff + *reps < size &&
 		readoff + *reps < maxfrom_0 &&
 		*reps < maxlen_0 &&
@@ -359,8 +365,8 @@ void find_matches_0(byte *input, ushort readoff, ushort size, ushort *reps, usho
 		len = 0;
 
 		while (
-			(pos + 1) < readoff &&
-			(readoff - pos) < maxfrom_0 &&
+			pos < readoff &&
+			(readoff - pos) <= maxfrom_0 &&
 			input[readoff] != input[pos]
 			)
 		{
@@ -368,10 +374,10 @@ void find_matches_0(byte *input, ushort readoff, ushort size, ushort *reps, usho
 		}
 
 		while (
-			(pos + 1) < readoff &&
+			pos < readoff &&
 			readoff + len < size &&
 			len < maxlen_0 &&
-			(readoff - pos) < maxfrom_0 &&
+			(readoff - pos) <= maxfrom_0 &&
 			input[readoff + len] == input[pos + len]
 			)
 		{
@@ -390,7 +396,8 @@ void find_matches_0(byte *input, ushort readoff, ushort size, ushort *reps, usho
 
 byte calc_word_bits(ushort value)
 {
-	for (byte i = 15; i > 0; --i)
+	byte i = 0;
+	for (i = 15; i > 0; --i)
 	{
 		if (value & (1 << i))
 		{
@@ -408,7 +415,7 @@ ushort do_compress_0(byte *input, byte *output, ushort size)
 	byte b = 0;
 	ushort w = 0;
 	byte min_reps_bits_cnt = 0, reps_bits_cnt = 0;
-	ushort reps = 0, from = 0;
+	ushort reps_00 = 0, reps_xx = 0, reps = 0, from_00 = 0, from_xx = 0;
 
 	write_byte(output, &writeoff, 0); // reps_bits_cnt
 
@@ -423,12 +430,15 @@ ushort do_compress_0(byte *input, byte *output, ushort size)
 
 		while (readoff < size)
 		{
-			find_xx_matches(input, readoff, size, &reps, &from, reps_bits_cnt);
+			find_00_matches(input, readoff, size, &reps_00, &from_00, reps_bits_cnt);
+			find_matches_0(input, readoff, size, &reps_xx, &from_xx, reps_bits_cnt);
+
+			reps = (reps_00 > reps_xx) ? reps_00 : reps_xx;
 
 			if (
-				readoff >= maxfrom_0 &&
-				reps >= minlen_0 &&
-				input[readoff] == 0
+				(reps >= minlen_0) &&
+				((reps_00 <= reps_xx) ||
+				((maxfrom_0 > readoff) && (reps_00 > reps_xx)))
 				)
 			{
 				write_cmd_bit(0, output, &writeoff, &cmdbits, &cmdoff);
@@ -438,22 +448,10 @@ ushort do_compress_0(byte *input, byte *output, ushort size)
 			}
 			else
 			{
-				find_matches_0(input, readoff, size, &reps, &from, reps_bits_cnt);
+				write_cmd_bit(1, output, &writeoff, &cmdbits, &cmdoff);
 
-				if (reps >= minlen_0)
-				{
-					write_cmd_bit(0, output, &writeoff, &cmdbits, &cmdoff);
-					writeoff += 2;
-
-					readoff += reps;
-				}
-				else
-				{
-					write_cmd_bit(1, output, &writeoff, &cmdbits, &cmdoff);
-
-					readoff++;
-					writeoff++;
-				}
+				readoff++;
+				writeoff++;
 			}
 		}
 
@@ -476,45 +474,33 @@ ushort do_compress_0(byte *input, byte *output, ushort size)
 	output[cmdoff] = 0;
 
 	reps_bits_cnt = min_reps_bits_cnt;
+
 	while (readoff < size)
 	{
-		find_xx_matches(input, readoff, size, &reps, &from, reps_bits_cnt);
+		find_00_matches(input, readoff, size, &reps_00, &from_00, reps_bits_cnt);
+		find_matches_0(input, readoff, size, &reps_xx, &from_xx, reps_bits_cnt);
+
+		reps = (reps_00 > reps_xx) ? reps_00 : reps_xx;
+		w = ((reps_00 > reps_xx) ? maxfrom_mask_0 : (readoff - from_xx - 1)) & maxfrom_mask_0;
+		w |= ((reps - 2) << maxfrom_bits_0);
 
 		if (
-			readoff >= maxfrom_0 &&
-			reps >= minlen_0 &&
-			input[readoff] == 0
+			(reps >= minlen_0) &&
+			((reps_00 <= reps_xx) ||
+			((maxfrom_0 > readoff) && (reps_00 > reps_xx)))
 			)
 		{
 			write_cmd_bit(0, output, &writeoff, &cmdbits, &cmdoff);
-
-			w = ((readoff - from - 1) * ((from == 0) ? -1 : 1)) & maxfrom_mask_0;
-			w |= ((reps - 2) << maxfrom_bits_0);
 			write_word(output, &writeoff, w);
 
 			readoff += reps;
 		}
 		else
 		{
-			find_matches_0(input, readoff, size, &reps, &from, reps_bits_cnt);
+			write_cmd_bit(1, output, &writeoff, &cmdbits, &cmdoff);
 
-			if (reps >= minlen_0)
-			{
-				write_cmd_bit(0, output, &writeoff, &cmdbits, &cmdoff);
-
-				w = ((readoff - from - 1) * ((from == 0) ? -1 : 1)) & maxfrom_mask_0;
-				w |= ((reps - 2) << maxfrom_bits_0);
-				write_word(output, &writeoff, w);
-
-				readoff += reps;
-			}
-			else
-			{
-				write_cmd_bit(1, output, &writeoff, &cmdbits, &cmdoff);
-
-				b = read_byte(input, &readoff);
-				write_byte(output, &writeoff, b);
-			}
+			b = read_byte(input, &readoff);
+			write_byte(output, &writeoff, b);
 		}
 	}
 
@@ -575,10 +561,10 @@ void find_matches_1_word(byte *input, ushort readoff, ushort size, ushort *reps)
 	*reps = 1;
 
 	while (
-		readoff + *reps < size &&
+		readoff + *reps * 2 < size &&
 		*reps < maxlen_1 &&
-		input[readoff + *reps] == input[readoff] &&
-		input[readoff + *reps + 1] == input[readoff + 1]
+		input[readoff + *reps * 2 + 0] == input[readoff + 0] &&
+		input[readoff + *reps * 2 + 1] == input[readoff + 1]
 		)
 	{
 		(*reps)++;
@@ -602,7 +588,7 @@ ushort do_compress_1_word(byte *input, byte *output, ushort size)
 
 			write_byte(output, &writeoff, (byte)(reps - 2));
 
-			readoff += reps;
+			readoff += reps * 2;
 		}
 		else
 		{
@@ -630,76 +616,60 @@ ushort ADDCALL compress(byte *input, byte *output, ushort size)
 	ushort min_size = 0, dest_size = 0;
 	ushort writeoff = 0;
 
-	dest_size = do_compress_0(input, output, size);
+	dest_size = do_compress_0(input, output, size) + 2; // two bytes of header
 	min_size = dest_size;
-	mode = 0;
+	mode = 3;
 
-	dest_size = do_compress_1_byte(input, output, size);
-	if (
-		min_size == 0 ||
-		min_size > dest_size
-		)
+	dest_size = do_compress_1_byte(input, output, size) + 3; // three bytes of header
+	if (min_size > dest_size)
 	{
 		min_size = dest_size;
-		mode = 1;
+		mode = 0;
 	}
 
 	if ((size & 1) == 0)
 	{
-		dest_size = do_compress_1_word(input, output, size);
-		if (
-			min_size == 0 ||
-			min_size > dest_size
-			)
+		dest_size = do_compress_1_word(input, output, size) + 3; // three bytes of header
+
+		if (min_size > dest_size)
+		{
+			min_size = dest_size;
+			mode = 1;
+		}
+	}
+
+	if (size >= 3)
+	{
+		dest_size = do_compress_1_copy(input, output, size) + 3; // three bytes of header
+
+		if (min_size > dest_size)
 		{
 			min_size = dest_size;
 			mode = 2;
 		}
 	}
 
-	if (size >= 3)
+	if (mode >= 0 && mode <= 2)
 	{
-		dest_size = do_compress_1_copy(input, output, size);
-		if (
-			min_size == 0 ||
-			min_size > dest_size
-			)
+		switch (mode)
 		{
-			min_size = dest_size;
-			mode = 3;
+		case 0: dest_size = do_compress_1_byte(input, &output[3], size); break;
+		case 1: dest_size = do_compress_1_word(input, &output[3], size); break;
+		case 2: dest_size = do_compress_1_copy(input, &output[3], size); break;
 		}
-	}
 
-	switch (mode)
-	{
-	case 1:
-	case 2:
-	case 3:
-	{
-		write_word(output, &writeoff, (size & 0x8000));
-
+		write_word(output, &writeoff, (dest_size | 0x8000)); // in_size
 		write_byte(output, &writeoff, mode);
-		if (mode == 1)
-		{
-			dest_size = do_compress_1_byte(input, &output[writeoff], size);
-		}
-		else if (mode == 2)
-		{
-			dest_size = do_compress_1_word(input, &output[writeoff], size);
-		}
-		else // (mode == 3)
-		{
-			dest_size = do_compress_1_copy(input, &output[writeoff], size);
-		}
-	} break;
-	default:
+	}
+	else
 	{
 		write_word(output, &writeoff, size);
 		dest_size = do_compress_0(input, &output[writeoff], size);
-	} break;
 	}
 
-	return (dest_size & 1) ? dest_size + 1 : dest_size;
+	writeoff += dest_size;
+
+	return (writeoff & 1) ? writeoff + 1 : writeoff;
 }
 
 #if !defined (ADD_EXPORTS)
